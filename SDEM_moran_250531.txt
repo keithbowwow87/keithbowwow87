@@ -1,0 +1,35 @@
+coords <- cbind(boston_506$LON, boston_506$LAT)  # Boston full coordinates
+> coords_test <- coords[-train_indices, ]          # subset to test set
+> 
+> # Create new neighbors and weights list for test data
+> nb_test <- knn2nb(knearneigh(coords_test, k = 5))  # 5 nearest neighbors
+> lw_test <- nb2listw(nb_test, style = "W")
+> 
+> # Step 2: Compute residuals from teacher model on test set
+> y_test_actual <- y[-train_indices]
+> y_test_pred <- teacher_predictions[-train_indices]
+> resid_teacher_test <- y_test_actual - y_test_pred
+> 
+> # Step 3: Run Moran's I test on residuals
+> moran_test_result <- moran.test(resid_teacher_test, lw_test)
+> print(moran_test_result)
+
+	Moran I test under randomisation
+
+data:  resid_teacher_test  
+weights: lw_test    
+
+Moran I statistic standard deviate = 2.7909, p-value = 0.002628
+alternative hypothesis: greater
+sample estimates:
+Moran I statistic       Expectation          Variance 
+      0.139773211      -0.010204082       0.002887803 
+
+> library(ggplot2)
+> boston_test_sf <- boston_506[-train_indices, ]
+> boston_test_sf$resid <- resid_teacher_test
+> 
+> ggplot(boston_test_sf) +
++     geom_sf(aes(fill = resid)) +
++     scale_fill_gradient2(low = "blue", mid = "white", high = "red") +
++     labs(title = "Spatial Distribution of Teacher Model Residuals (Test Set)")

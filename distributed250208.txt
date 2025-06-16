@@ -1,0 +1,44 @@
+# ... existing code ...
+
+# 1. 修复地理坐标系的警告，使用投影坐标系
+gdf = gpd.read_file(url)
+gdf = gdf.to_crs('EPSG:3857')  # 使用Web Mercator投影
+
+# 2. 在训练教师模型时，添加验证集以监控过拟合
+def train_teacher_model(x_train, y_train):
+    teacher_model = models.Sequential([
+        layers.Input(shape=(2,)),  # 使用Input层代替input_shape
+        layers.Dense(128, activation='relu'),
+        layers.BatchNormalization(),  # 添加批归一化
+        layers.Dense(32, activation='relu'),
+        layers.Dense(1, activation='sigmoid')
+    ])
+    teacher_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    # 添加early stopping和验证集
+    callbacks = [tf.keras.callbacks.EarlyStopping(patience=3, restore_best_weights=True)]
+    teacher_model.fit(x_train, y_train, epochs=50, batch_size=32, 
+                     validation_split=0.2, callbacks=callbacks, verbose=0)
+    return teacher_model
+
+# 3. 优化分布式计算参数
+params_list = [np.random.rand(3) for _ in range(20)]  # 减少参数组合数量
+params_list = [(lr, max(32, int(bs)), alpha) for lr, bs, alpha in params_list]  # 限制batch size
+
+# 4. 优化学生模型架构
+student_model = models.Sequential([
+    layers.Input(shape=(2,)),
+    layers.Dense(64, activation='relu'),
+    layers.BatchNormalization(),
+    layers.Dropout(0.3),
+    layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+    layers.Dense(1)
+])
+
+# 5. 使用学习率调度器
+lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+    initial_learning_rate=best_learning_rate,
+    decay_steps=1000,
+    decay_rate=0.9)
+optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+
+# ... existing code ...

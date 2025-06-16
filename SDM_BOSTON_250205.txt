@@ -1,0 +1,745 @@
+library(spdep)
+載入需要的套件：sp
+載入需要的套件：spData
+載入需要的套件：sf
+Linking to GEOS 3.9.1, GDAL 3.4.3, PROJ 7.2.1; sf_use_s2() is TRUE
+> library(caret)
+載入需要的套件：ggplot2
+載入需要的套件：lattice
+> library(MASS)  
+> library(spdep)
+> library(sf)
+> library(spData)
+> library(spatialreg)
+載入需要的套件：Matrix
+
+載入套件：‘spatialreg’
+
+下列物件被遮斷自 ‘package:spdep’:
+
+    get.ClusterOption, get.coresOption, get.mcOption, get.VerboseOption,
+    get.ZeroPolicyOption, set.ClusterOption, set.coresOption, set.mcOption,
+    set.VerboseOption, set.ZeroPolicyOption
+
+> data(Boston)
+> X <- Boston[, -14]  # Exclude the "medv" column (response variable)
+> y <- Boston$medv
+> boston_506 <- st_read(system.file("shapes/boston_tracts.shp", package = "spData")[1], quiet = TRUE)
+> nb_q <- spdep::poly2nb(boston_506)
+> lw_q <- spdep::nb2listw(nb_q, style = "W")
+> library(plm)
+> library(splm)
+> library(maps)
+> library(maptools)
+Checking rgeos availability: TRUE
+Please note that 'maptools' will be retired during 2023,
+plan transition at your earliest convenience;
+some functionality will be moved to 'sp'.
+> teacher_model <- lagsarlm(medv ~ crim + zn + indus + chas + nox + rm + age + dis + rad + tax + ptratio + black + lstat, data = Boston, listw = lw_q, type = "mixed")
+> teacher_predictions <- predict(teacher_model)
+This method assumes the response is known - see manual page
+> train_indices <- createDataPartition(y, p = 0.8, list = FALSE)
+> X_train <- X[train_indices, ]
+> y_train <- y[train_indices]
+> X_test <- X[-train_indices, ]
+> y_test <- y[-train_indices]
+> teacher_predictions_test <- teacher_predictions[-train_indices]
+> combined_train_data <- as.matrix(cbind(X_train, teacher_predictions[train_indices]))
+> combined_test_data <- as.matrix(cbind(X_test, teacher_predictions_test))
+> custom_loss <- function(y_true, y_pred) {
++     alpha <- 0.5  # Weight for the standard loss
++     mse_loss <- mean((y_true - y_pred)^2)  # Mean Squared Error
++     distillation_loss <- mean((y_true - y_pred)^2)  # Distillation loss (can be different from MSE)
++     total_loss <- alpha * mse_loss + (1 - alpha) * distillation_loss
++     return(total_loss)
++ }
+> combined_train_data1 <- as.data.frame(combined_train_data)
+> student_model <- lm(y_train ~ ., data = combined_train_data1)
+> custom_loss <- function(y_true, y_pred) {
++     alpha <- 0.5  # Weight for the standard loss
++     mse_loss <- mean((y_true - y_pred)^2)  # Mean Squared Error
++     distillation_loss <- mean((y_true - y_pred)^2)  # Distillation loss (can be different from MSE)
++     total_loss <- alpha * mse_loss + (1 - alpha) * distillation_loss
++     return(total_loss)
++ }
+> student_predictions <- predict(student_model, data = combined_test_data)
+> mse_student <- mean((y_test - student_predictions)^2)
+Warning message:
+In y_test - student_predictions :
+  longer object length is not a multiple of shorter object length
+> mse_teacher <- mean((y_test - teacher_predictions[-train_indices])^2)
+> print(paste("MSE Teacher:", mse_teacher))
+[1] "MSE Teacher: 16.1294651651718"
+> print(paste("MSE Student (with knowledge distillation):", mse_student))
+[1] "MSE Student (with knowledge distillation): 159.877880800972"
+> library(keras3)
+> optimizer <- optimizer_adam(learning_rate = 0.001)
+2025-02-05 02:30:27.010328: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-02-05 02:30:30.690275: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-02-05 02:30:38.560499: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+> student_model <- keras_model_sequential() %>%
++     layer_dense(units = 128, activation = "relu", input_shape = 14) %>% 
++     layer_dropout(rate = 0.2) %>%
++     layer_dense(units = 32, activation = "relu") %>% 
++     layer_dropout(rate = 0.2) %>%
++     layer_dense(units = 1, activation = "linear")
+C:\Users\anton\DOCUME~1\VIRTUA~1\R-TENS~1\Lib\site-packages\keras\src\layers\core\dense.py:87: UserWarning: Do not pass an `input_shape`/`input_dim` argument to a layer. When using Sequential models, prefer using an `Input(shape)` object as the first layer in the model instead.
+  super().__init__(activity_regularizer=activity_regularizer, **kwargs)
+> student_model <- keras_model_sequential() %>%
++     layer_dense(units = 128, activation = "relu", input_shape = 14) %>% 
++     layer_dropout(rate = 0.2) %>%
++     layer_dense(units = 32, activation = "relu") %>% 
++     layer_dropout(rate = 0.2) %>%
++     layer_dense(units = 1, activation = "linear")
+> 
+> student_model %>%
++     compile(
++         loss = custom_loss,
++         optimizer = optimizer,
++         metrics = list("mean_squared_error")
++     )
+> 
+> history <- student_model %>%
++     fit(
++         x = combined_train_data,
++         y = y_train,
++         epochs = 100,
++         batch_size = 32,
++         validation_split = 0.2  # Use part of the training data for validation
++     )
+Epoch 1/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 14s 1s/step - loss: 27593.8203 - mean_squared_error: 21135.0391
+ 5/11 ━━━━━━━━━━━━━━━━━━━━ 0s 3ms/step - loss: 21135.0391 - mean_squared_error: 21135.0391
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 3ms/step - loss: 24313.8848 - mean_squared_error: 19789.0859
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 4ms/step - loss: 26069.1758 - mean_squared_error: 19789.0859
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 3ms/step - loss: 22651.6895 - mean_squared_error: 18638.1348
+11/11 ━━━━━━━━━━━━━━━━━━━━ 2s 60ms/step - loss: 14734.2148 - mean_squared_error: 14734.2148 - val_loss: 2090.3035 - val_mean_squared_error: 2090.3035
+Epoch 2/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 2175.1084 - mean_squared_error: 2175.1084
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 2125.5508 - mean_squared_error: 2125.5508 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 2061.1531 - mean_squared_error: 2061.1531
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 23ms/step - loss: 2176.1614 - mean_squared_error: 2176.1614 - val_loss: 2185.0681 - val_mean_squared_error: 2185.0681
+Epoch 3/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 2069.8943 - mean_squared_error: 2069.8943
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 1841.9849 - mean_squared_error: 1841.9849 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 1792.5371 - mean_squared_error: 1718.1940 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 1443.7611 - mean_squared_error: 1443.7611 - val_loss: 328.3620 - val_mean_squared_error: 328.3620
+Epoch 4/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 768.4579 - mean_squared_error: 768.4579
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 998us/step - loss: 752.1630 - mean_squared_error: 724.7632
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 724.7632 - mean_squared_error: 709.7118  
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 704.7039 - mean_squared_error: 704.7039 - val_loss: 70.2717 - val_mean_squared_error: 70.2717
+Epoch 5/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 32ms/step - loss: 505.3499 - mean_squared_error: 505.3499
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 478.5276 - mean_squared_error: 478.5276 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 533.7714 - mean_squared_error: 533.7714 - val_loss: 74.0007 - val_mean_squared_error: 74.0007
+Epoch 6/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 33ms/step - loss: 570.3174 - mean_squared_error: 570.3174
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 555.1885 - mean_squared_error: 555.1885 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 556.9444 - mean_squared_error: 546.8380
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 550.3197 - mean_squared_error: 550.3197 - val_loss: 92.2778 - val_mean_squared_error: 92.2778
+Epoch 7/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 574.3405 - mean_squared_error: 707.4729
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 707.4729 - mean_squared_error: 693.8417 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 693.8417 - mean_squared_error: 667.0992
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 667.0992 - mean_squared_error: 667.0992
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 610.0140 - mean_squared_error: 610.0140 - val_loss: 95.8748 - val_mean_squared_error: 95.8748
+Epoch 8/100
+
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 539.0320 - mean_squared_error: 527.5930
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 527.5930 - mean_squared_error: 527.5930
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 544.5964 - mean_squared_error: 539.0320
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 522.0541 - mean_squared_error: 514.5228 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 491.6927 - mean_squared_error: 491.6927 - val_loss: 66.0534 - val_mean_squared_error: 66.0534
+Epoch 9/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 37ms/step - loss: 302.3574 - mean_squared_error: 302.3574
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 325.2043 - mean_squared_error: 325.2043 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 345.8515 - mean_squared_error: 345.8515
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 355.6680 - mean_squared_error: 355.6680 - val_loss: 47.8777 - val_mean_squared_error: 47.8777
+Epoch 10/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 304.4373 - mean_squared_error: 304.4373
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 329.3519 - mean_squared_error: 329.3519 
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 310.4797 - mean_squared_error: 329.5322
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 320.1947 - mean_squared_error: 320.1947 - val_loss: 33.3691 - val_mean_squared_error: 33.3691
+Epoch 11/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 32ms/step - loss: 293.5302 - mean_squared_error: 293.5302
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 345.0367 - mean_squared_error: 345.0367 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 313.0449 - mean_squared_error: 313.0449 - val_loss: 27.4081 - val_mean_squared_error: 27.4081
+Epoch 12/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 241.5413 - mean_squared_error: 233.1710
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 233.1710 - mean_squared_error: 233.1710
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 258.4432 - mean_squared_error: 258.4432 - val_loss: 29.3705 - val_mean_squared_error: 29.3705
+Epoch 13/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 341.5999 - mean_squared_error: 341.5999
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 344.7106 - mean_squared_error: 338.6595 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 338.6595 - mean_squared_error: 338.6595 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 297.8750 - mean_squared_error: 297.8750 - val_loss: 33.4075 - val_mean_squared_error: 33.4075
+Epoch 14/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 225.8812 - mean_squared_error: 225.8812
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 223.8845 - mean_squared_error: 228.7369 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 19ms/step - loss: 233.0621 - mean_squared_error: 233.0621 - val_loss: 26.6765 - val_mean_squared_error: 26.6765
+Epoch 15/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 174.5991 - mean_squared_error: 195.9898
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 195.9898 - mean_squared_error: 200.5020 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 200.5020 - mean_squared_error: 199.8057
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 199.8057 - mean_squared_error: 199.8057
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 193.5398 - mean_squared_error: 193.5398 - val_loss: 24.3448 - val_mean_squared_error: 24.3448
+Epoch 16/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 172.3546 - mean_squared_error: 172.3546
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 220.8131 - mean_squared_error: 220.8131 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 234.8987 - mean_squared_error: 234.8987 - val_loss: 22.2358 - val_mean_squared_error: 22.2358
+Epoch 17/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 124.9682 - mean_squared_error: 124.9682
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 134.5259 - mean_squared_error: 134.5259 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 142.5594 - mean_squared_error: 142.5594
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 164.9962 - mean_squared_error: 164.9962 - val_loss: 24.3752 - val_mean_squared_error: 24.3752
+Epoch 18/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 293.8612 - mean_squared_error: 293.8612
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 234.7844 - mean_squared_error: 226.1055 
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 251.0832 - mean_squared_error: 226.1055 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 207.7296 - mean_squared_error: 207.7296 - val_loss: 24.0572 - val_mean_squared_error: 24.0572
+Epoch 19/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 140.1920 - mean_squared_error: 140.1920
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 136.7625 - mean_squared_error: 141.6821 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 156.7229 - mean_squared_error: 156.7229 - val_loss: 20.4533 - val_mean_squared_error: 20.4533
+Epoch 20/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 179.5374 - mean_squared_error: 179.5374
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 173.5750 - mean_squared_error: 165.9807 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 178.0222 - mean_squared_error: 178.0222 - val_loss: 20.4175 - val_mean_squared_error: 20.4175
+Epoch 21/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 140.5150 - mean_squared_error: 140.5150
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 122.6884 - mean_squared_error: 129.3977 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 146.4115 - mean_squared_error: 146.4115 - val_loss: 23.3812 - val_mean_squared_error: 23.3812
+Epoch 22/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 280.7299 - mean_squared_error: 280.7299
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 237.5627 - mean_squared_error: 215.5975
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 215.5975 - mean_squared_error: 215.5975 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 193.8555 - mean_squared_error: 193.8555 - val_loss: 22.5235 - val_mean_squared_error: 22.5235
+Epoch 23/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 93.7876 - mean_squared_error: 103.5318
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 103.5318 - mean_squared_error: 103.5318
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 111.8429 - mean_squared_error: 120.0554
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 149.5827 - mean_squared_error: 149.5827 - val_loss: 19.5164 - val_mean_squared_error: 19.5164
+Epoch 24/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 232.6393 - mean_squared_error: 232.6393
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 227.9674 - mean_squared_error: 227.9674
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 178.3974 - mean_squared_error: 178.3974 - val_loss: 19.1499 - val_mean_squared_error: 19.1499
+Epoch 25/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 185.5364 - mean_squared_error: 189.7603
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 189.7603 - mean_squared_error: 189.7603 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 187.5890 - mean_squared_error: 187.5890
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 173.7262 - mean_squared_error: 173.7262 - val_loss: 24.0753 - val_mean_squared_error: 24.0753
+Epoch 26/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 104.5696 - mean_squared_error: 104.5696
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 130.2057 - mean_squared_error: 130.2057 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 136.3912 - mean_squared_error: 136.3912 - val_loss: 18.9530 - val_mean_squared_error: 18.9530
+Epoch 27/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 108.1936 - mean_squared_error: 114.2479
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 998us/step - loss: 114.2479 - mean_squared_error: 114.2479
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 125.9884 - mean_squared_error: 125.9884  
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 19ms/step - loss: 137.1752 - mean_squared_error: 137.1752 - val_loss: 18.4555 - val_mean_squared_error: 18.4555
+Epoch 28/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 34ms/step - loss: 166.6702 - mean_squared_error: 166.6702
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 998us/step - loss: 185.6409 - mean_squared_error: 185.6409
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 161.9656 - mean_squared_error: 161.9656 - val_loss: 19.8466 - val_mean_squared_error: 19.8466
+Epoch 29/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 252.8787 - mean_squared_error: 252.8787
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 212.0174 - mean_squared_error: 212.0174 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 155.3105 - mean_squared_error: 155.3105 - val_loss: 18.7585 - val_mean_squared_error: 18.7585
+Epoch 30/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 104.4584 - mean_squared_error: 109.3769
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 109.3769 - mean_squared_error: 109.3769 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 111.5295 - mean_squared_error: 111.5295 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 124.3702 - mean_squared_error: 124.3702 - val_loss: 18.7877 - val_mean_squared_error: 18.7877
+Epoch 31/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 123.2128 - mean_squared_error: 123.2128
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 120.0134 - mean_squared_error: 120.0134 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 149.8654 - mean_squared_error: 149.8654 - val_loss: 17.9511 - val_mean_squared_error: 17.9511
+Epoch 32/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 188.2057 - mean_squared_error: 188.2057
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 192.5001 - mean_squared_error: 192.5001
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 19ms/step - loss: 168.3317 - mean_squared_error: 168.3317 - val_loss: 18.0382 - val_mean_squared_error: 18.0382
+Epoch 33/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 32ms/step - loss: 138.2045 - mean_squared_error: 138.2045
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 146.2276 - mean_squared_error: 146.2276 
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 3ms/step - loss: 129.8284 - mean_squared_error: 148.5559 
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 148.5559 - mean_squared_error: 148.5559
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 150.0191 - mean_squared_error: 150.0191 - val_loss: 18.0336 - val_mean_squared_error: 18.0336
+Epoch 34/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 100.8616 - mean_squared_error: 100.8616
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 135.8705 - mean_squared_error: 135.8705
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 145.0725 - mean_squared_error: 145.0725 - val_loss: 17.8756 - val_mean_squared_error: 17.8756
+Epoch 35/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 134.3305 - mean_squared_error: 134.3305
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 118.3669 - mean_squared_error: 118.3669
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 121.5696 - mean_squared_error: 121.5696 - val_loss: 18.5602 - val_mean_squared_error: 18.5602
+Epoch 36/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 88.3262 - mean_squared_error: 88.3262
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 80.0923 - mean_squared_error: 80.0923 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 121.7775 - mean_squared_error: 121.7775 - val_loss: 17.8680 - val_mean_squared_error: 17.8680
+Epoch 37/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 126.7674 - mean_squared_error: 126.7674
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 128.7941 - mean_squared_error: 128.7941 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 140.1129 - mean_squared_error: 140.1129
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 135.0518 - mean_squared_error: 135.0518 - val_loss: 19.3766 - val_mean_squared_error: 19.3766
+Epoch 38/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 75.1315 - mean_squared_error: 75.1315
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 95.2244 - mean_squared_error: 101.3461
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 101.3461 - mean_squared_error: 109.1052
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 125.0105 - mean_squared_error: 125.0105 - val_loss: 17.7858 - val_mean_squared_error: 17.7858
+Epoch 39/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 153.8887 - mean_squared_error: 153.8887
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 137.2912 - mean_squared_error: 137.2912 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 135.1954 - mean_squared_error: 135.1954 - val_loss: 18.3010 - val_mean_squared_error: 18.3010
+Epoch 40/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 118.9563 - mean_squared_error: 118.9563
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 128.0430 - mean_squared_error: 128.0430 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 142.2595 - mean_squared_error: 142.2595 - val_loss: 18.3130 - val_mean_squared_error: 18.3130
+Epoch 41/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 162.6709 - mean_squared_error: 150.7245
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 142.2069 - mean_squared_error: 138.0777 
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 150.7245 - mean_squared_error: 138.0777 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 133.2579 - mean_squared_error: 133.2579 - val_loss: 19.4813 - val_mean_squared_error: 19.4813
+Epoch 42/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 142.8288 - mean_squared_error: 142.8288
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 134.0755 - mean_squared_error: 123.7951 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 124.4990 - mean_squared_error: 124.4990 - val_loss: 18.0322 - val_mean_squared_error: 18.0322
+Epoch 43/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 173.8223 - mean_squared_error: 170.8086
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 170.8086 - mean_squared_error: 162.1964 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 162.1964 - mean_squared_error: 152.9248
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 137.0930 - mean_squared_error: 137.0930 - val_loss: 20.4037 - val_mean_squared_error: 20.4037
+Epoch 44/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 97.4124 - mean_squared_error: 94.6414
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 94.6414 - mean_squared_error: 94.6414
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 93.1719 - mean_squared_error: 93.1719
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 120.2039 - mean_squared_error: 120.2039 - val_loss: 22.3105 - val_mean_squared_error: 22.3105
+Epoch 45/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 211.8768 - mean_squared_error: 211.8768
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 191.0216 - mean_squared_error: 191.0216
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 136.5957 - mean_squared_error: 136.5957 - val_loss: 20.0685 - val_mean_squared_error: 20.0685
+Epoch 46/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 26ms/step - loss: 109.1118 - mean_squared_error: 109.1118
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 118.2615 - mean_squared_error: 118.2615
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 128.6018 - mean_squared_error: 128.6018
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 137.0827 - mean_squared_error: 137.0827 - val_loss: 21.3515 - val_mean_squared_error: 21.3515
+Epoch 47/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 54.6225 - mean_squared_error: 67.0189
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 67.0189 - mean_squared_error: 74.8357
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 74.8357 - mean_squared_error: 84.9318
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 84.9318 - mean_squared_error: 90.8724
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 107.8906 - mean_squared_error: 107.8906 - val_loss: 20.5381 - val_mean_squared_error: 20.5381
+Epoch 48/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 184.8471 - mean_squared_error: 170.9354
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 170.9354 - mean_squared_error: 170.9354 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 162.5514 - mean_squared_error: 156.9260
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 139.6844 - mean_squared_error: 139.6844 - val_loss: 20.2515 - val_mean_squared_error: 20.2515
+Epoch 49/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 119.0226 - mean_squared_error: 119.0226
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 127.7611 - mean_squared_error: 127.7611 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 129.2072 - mean_squared_error: 129.2072 - val_loss: 19.2951 - val_mean_squared_error: 19.2951
+Epoch 50/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 186.8890 - mean_squared_error: 186.8890
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 167.0106 - mean_squared_error: 167.0106 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 132.8526 - mean_squared_error: 132.8526 - val_loss: 24.4855 - val_mean_squared_error: 24.4855
+Epoch 51/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 138.7154 - mean_squared_error: 138.7154
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 131.5540 - mean_squared_error: 131.5540 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 19ms/step - loss: 132.2764 - mean_squared_error: 132.2764 - val_loss: 17.7193 - val_mean_squared_error: 17.7193
+Epoch 52/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 158.6591 - mean_squared_error: 158.6591
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 168.0997 - mean_squared_error: 167.0234
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 144.7592 - mean_squared_error: 144.7592 - val_loss: 17.3080 - val_mean_squared_error: 17.3080
+Epoch 53/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 109.1020 - mean_squared_error: 109.1020
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 135.6544 - mean_squared_error: 135.6544 
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 125.5123 - mean_squared_error: 135.6544 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 129.4104 - mean_squared_error: 129.4104 - val_loss: 19.6049 - val_mean_squared_error: 19.6049
+Epoch 54/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 90.5309 - mean_squared_error: 90.5309
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 86.2067 - mean_squared_error: 86.2067 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 20ms/step - loss: 95.7798 - mean_squared_error: 95.7798 - val_loss: 17.1026 - val_mean_squared_error: 17.1026
+Epoch 55/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 166.1339 - mean_squared_error: 162.8322
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 162.8322 - mean_squared_error: 162.8322 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 151.5527 - mean_squared_error: 144.2206
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 129.4411 - mean_squared_error: 129.4411 - val_loss: 16.8314 - val_mean_squared_error: 16.8314
+Epoch 56/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 146.9872 - mean_squared_error: 146.9872
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 140.5268 - mean_squared_error: 140.5268 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 127.6706 - mean_squared_error: 127.6706 - val_loss: 21.0785 - val_mean_squared_error: 21.0785
+Epoch 57/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 138.6950 - mean_squared_error: 138.6950
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 127.9065 - mean_squared_error: 125.1654 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 125.1654 - mean_squared_error: 125.1654
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 113.5999 - mean_squared_error: 113.5999 - val_loss: 16.9569 - val_mean_squared_error: 16.9569
+Epoch 58/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 136.8474 - mean_squared_error: 122.2911
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 122.2911 - mean_squared_error: 122.2911 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 115.1041 - mean_squared_error: 114.5850
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 118.0571 - mean_squared_error: 118.0571 - val_loss: 16.3411 - val_mean_squared_error: 16.3411
+Epoch 59/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 50.0640 - mean_squared_error: 50.0640
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 78.5223 - mean_squared_error: 78.5223 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 107.5669 - mean_squared_error: 107.5669 - val_loss: 16.9238 - val_mean_squared_error: 16.9238
+Epoch 60/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 177.0066 - mean_squared_error: 177.0066
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 154.7674 - mean_squared_error: 157.8609 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 16ms/step - loss: 139.4154 - mean_squared_error: 139.4154 - val_loss: 18.4163 - val_mean_squared_error: 18.4163
+Epoch 61/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 80.7604 - mean_squared_error: 80.7604
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 92.5890 - mean_squared_error: 96.1166
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 111.5968 - mean_squared_error: 111.5968 - val_loss: 17.9040 - val_mean_squared_error: 17.9040
+Epoch 62/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 35ms/step - loss: 63.9978 - mean_squared_error: 69.6892
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 69.6892 - mean_squared_error: 81.1974 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 81.1974 - mean_squared_error: 87.3231 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 1s 56ms/step - loss: 103.0997 - mean_squared_error: 103.0997 - val_loss: 17.2396 - val_mean_squared_error: 17.2396
+Epoch 63/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 99.2582 - mean_squared_error: 99.2582
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 95.4463 - mean_squared_error: 95.8491 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 95.8491 - mean_squared_error: 95.8491 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 107.0921 - mean_squared_error: 107.0921 - val_loss: 22.1752 - val_mean_squared_error: 22.1752
+Epoch 64/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 141.1383 - mean_squared_error: 141.1383
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 128.2904 - mean_squared_error: 117.4646 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 105.2551 - mean_squared_error: 105.2551 - val_loss: 19.7663 - val_mean_squared_error: 19.7663
+Epoch 65/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 194.6854 - mean_squared_error: 194.6854
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 177.1849 - mean_squared_error: 168.0969 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 127.5057 - mean_squared_error: 127.5057 - val_loss: 18.1571 - val_mean_squared_error: 18.1571
+Epoch 66/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 60.2477 - mean_squared_error: 76.5168
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 76.5168 - mean_squared_error: 76.5168
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 82.5262 - mean_squared_error: 82.5262
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 103.1896 - mean_squared_error: 103.1896 - val_loss: 20.9470 - val_mean_squared_error: 20.9470
+Epoch 67/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 33ms/step - loss: 235.1020 - mean_squared_error: 235.1020
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 168.0292 - mean_squared_error: 168.0292 
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 189.6063 - mean_squared_error: 168.0292 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 124.9093 - mean_squared_error: 124.9093 - val_loss: 18.0753 - val_mean_squared_error: 18.0753
+Epoch 68/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 51.4357 - mean_squared_error: 51.4357
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 73.1588 - mean_squared_error: 73.1588 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 106.3167 - mean_squared_error: 106.3167 - val_loss: 17.0119 - val_mean_squared_error: 17.0119
+Epoch 69/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 55.1933 - mean_squared_error: 55.1933
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 65.0901 - mean_squared_error: 65.0901 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 94.3081 - mean_squared_error: 94.3081 - val_loss: 16.4662 - val_mean_squared_error: 16.4662
+Epoch 70/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 107.2005 - mean_squared_error: 107.2005
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 98.9049 - mean_squared_error: 98.3794   
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 111.1122 - mean_squared_error: 111.1122 - val_loss: 16.3328 - val_mean_squared_error: 16.3328
+Epoch 71/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 148.8949 - mean_squared_error: 148.8949
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 136.1436 - mean_squared_error: 132.5061 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 115.7705 - mean_squared_error: 115.7705 - val_loss: 16.5466 - val_mean_squared_error: 16.5466
+Epoch 72/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 81.1731 - mean_squared_error: 81.1731
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 94.2500 - mean_squared_error: 99.3681 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 99.3681 - mean_squared_error: 99.3681 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 101.4183 - mean_squared_error: 101.4183 - val_loss: 16.2213 - val_mean_squared_error: 16.2213
+Epoch 73/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 65.9334 - mean_squared_error: 65.9334
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 65.5063 - mean_squared_error: 65.5063 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 87.2532 - mean_squared_error: 87.2532 - val_loss: 18.8859 - val_mean_squared_error: 18.8859
+Epoch 74/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 107.7561 - mean_squared_error: 101.9372
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 101.9372 - mean_squared_error: 101.9372
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 100.9057 - mean_squared_error: 102.7849  
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 104.3210 - mean_squared_error: 104.3210 - val_loss: 18.7306 - val_mean_squared_error: 18.7306
+Epoch 75/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 71.7522 - mean_squared_error: 71.7522
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 75.0776 - mean_squared_error: 77.6366 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 76.2464 - mean_squared_error: 77.6366
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 87.6551 - mean_squared_error: 87.6551 - val_loss: 22.4151 - val_mean_squared_error: 22.4151
+Epoch 76/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 120.1832 - mean_squared_error: 120.1832
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 112.3721 - mean_squared_error: 112.3721 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 104.6801 - mean_squared_error: 104.6801 - val_loss: 23.1232 - val_mean_squared_error: 23.1232
+Epoch 77/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 91.4712 - mean_squared_error: 91.4712
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 998us/step - loss: 100.1801 - mean_squared_error: 102.7473
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 102.7473 - mean_squared_error: 104.1959
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 105.7837 - mean_squared_error: 105.7837 - val_loss: 23.4353 - val_mean_squared_error: 23.4353
+Epoch 78/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 133.3206 - mean_squared_error: 133.3206
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 123.3603 - mean_squared_error: 116.4042 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 116.4042 - mean_squared_error: 117.3428
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 110.1141 - mean_squared_error: 110.1141 - val_loss: 15.3345 - val_mean_squared_error: 15.3345
+Epoch 79/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step - loss: 81.4112 - mean_squared_error: 87.9219
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 87.9219 - mean_squared_error: 95.6490 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 95.6490 - mean_squared_error: 96.8820
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 98.8590 - mean_squared_error: 98.8590 - val_loss: 16.2680 - val_mean_squared_error: 16.2680
+Epoch 80/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 126.9591 - mean_squared_error: 126.9591
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 998us/step - loss: 123.3378 - mean_squared_error: 112.1761
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 112.1761 - mean_squared_error: 108.2145 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 101.1369 - mean_squared_error: 101.1369 - val_loss: 15.4750 - val_mean_squared_error: 15.4750
+Epoch 81/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 87.7408 - mean_squared_error: 87.7408
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 83.9901 - mean_squared_error: 85.2473
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 85.2473 - mean_squared_error: 85.2473
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 97.2735 - mean_squared_error: 97.2735 - val_loss: 15.7366 - val_mean_squared_error: 15.7366
+Epoch 82/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 48.9570 - mean_squared_error: 48.9570
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 66.8351 - mean_squared_error: 66.8351 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 87.4868 - mean_squared_error: 87.4868 - val_loss: 14.8507 - val_mean_squared_error: 14.8507
+Epoch 83/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 89.1684 - mean_squared_error: 89.1684
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1000us/step - loss: 83.5899 - mean_squared_error: 83.5899
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 83.1931 - mean_squared_error: 83.1931 - val_loss: 17.8446 - val_mean_squared_error: 17.8446
+Epoch 84/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 118.7349 - mean_squared_error: 118.7349
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 999us/step - loss: 116.1363 - mean_squared_error: 116.1363
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 103.1728 - mean_squared_error: 103.1728 - val_loss: 15.0164 - val_mean_squared_error: 15.0164
+Epoch 85/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 79.9821 - mean_squared_error: 79.9821
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 76.0871 - mean_squared_error: 76.7201 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 90.1005 - mean_squared_error: 90.1005 - val_loss: 14.0208 - val_mean_squared_error: 14.0208
+Epoch 86/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 104.4235 - mean_squared_error: 104.4235
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 113.0107 - mean_squared_error: 113.0107 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 94.8634 - mean_squared_error: 94.8634 - val_loss: 14.0249 - val_mean_squared_error: 14.0249
+Epoch 87/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 96.5177 - mean_squared_error: 106.0075
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 106.0075 - mean_squared_error: 106.0075
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 103.1811 - mean_squared_error: 102.9643
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 102.9643 - mean_squared_error: 102.9643
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 98.1317 - mean_squared_error: 98.1317 - val_loss: 13.9419 - val_mean_squared_error: 13.9419
+Epoch 88/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 101.2454 - mean_squared_error: 110.4117
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 110.4117 - mean_squared_error: 106.5970
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 106.5970 - mean_squared_error: 103.5799 
+ 4/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 103.5799 - mean_squared_error: 101.9366
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 99.7425 - mean_squared_error: 99.7425 - val_loss: 14.5498 - val_mean_squared_error: 14.5498
+Epoch 89/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 66.1289 - mean_squared_error: 66.1289
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 68.6404 - mean_squared_error: 67.6801 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 82.3631 - mean_squared_error: 82.3631 - val_loss: 16.9597 - val_mean_squared_error: 16.9597
+Epoch 90/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step - loss: 138.9068 - mean_squared_error: 127.4300
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 127.4300 - mean_squared_error: 122.4605 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 122.4605 - mean_squared_error: 122.4605 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 107.1590 - mean_squared_error: 107.1590 - val_loss: 18.5846 - val_mean_squared_error: 18.5846
+Epoch 91/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 56.5902 - mean_squared_error: 56.5902
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 79.3126 - mean_squared_error: 79.3126 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 92.2829 - mean_squared_error: 92.2829 - val_loss: 18.2830 - val_mean_squared_error: 18.2830
+Epoch 92/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 54.2906 - mean_squared_error: 54.2906
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 63.3550 - mean_squared_error: 64.7147 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 64.7147 - mean_squared_error: 65.2125
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 80.0465 - mean_squared_error: 80.0465 - val_loss: 17.9366 - val_mean_squared_error: 17.9366
+Epoch 93/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 90.0525 - mean_squared_error: 90.0525
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 86.2383 - mean_squared_error: 86.2383 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 19ms/step - loss: 86.2630 - mean_squared_error: 86.2630 - val_loss: 15.7078 - val_mean_squared_error: 15.7078
+Epoch 94/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 39ms/step - loss: 52.7663 - mean_squared_error: 52.7663
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 74.0521 - mean_squared_error: 84.3943 
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 91.7002 - mean_squared_error: 91.7002 - val_loss: 16.2735 - val_mean_squared_error: 16.2735
+Epoch 95/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step - loss: 62.9411 - mean_squared_error: 70.8612
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 70.8612 - mean_squared_error: 70.8612 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 76.2333 - mean_squared_error: 76.2333
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 85.7648 - mean_squared_error: 85.7648 - val_loss: 19.9181 - val_mean_squared_error: 19.9181
+Epoch 96/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 31ms/step - loss: 47.0490 - mean_squared_error: 58.6330
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 58.6330 - mean_squared_error: 58.6330 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 63.0126 - mean_squared_error: 64.9103
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 73.4774 - mean_squared_error: 73.4774 - val_loss: 18.1587 - val_mean_squared_error: 18.1587
+Epoch 97/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 74.8845 - mean_squared_error: 88.3071
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 88.3071 - mean_squared_error: 88.3071 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 87.6773 - mean_squared_error: 87.6773
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 91.5852 - mean_squared_error: 91.5852 - val_loss: 16.4414 - val_mean_squared_error: 16.4414
+Epoch 98/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 109.0280 - mean_squared_error: 109.0280
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 93.0037 - mean_squared_error: 93.0037   
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 90.5222 - mean_squared_error: 90.5222 - val_loss: 16.2554 - val_mean_squared_error: 16.2554
+Epoch 99/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 30ms/step - loss: 118.0799 - mean_squared_error: 118.0799
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 116.4471 - mean_squared_error: 107.8030 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 107.8030 - mean_squared_error: 101.8808
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 18ms/step - loss: 92.2089 - mean_squared_error: 92.2089 - val_loss: 14.8035 - val_mean_squared_error: 14.8035
+Epoch 100/100
+
+ 1/11 ━━━━━━━━━━━━━━━━━━━━ 0s 32ms/step - loss: 93.6212 - mean_squared_error: 91.8395
+ 2/11 ━━━━━━━━━━━━━━━━━━━━ 0s 1ms/step - loss: 91.8395 - mean_squared_error: 85.4919 
+ 3/11 ━━━━━━━━━━━━━━━━━━━━ 0s 2ms/step - loss: 85.4919 - mean_squared_error: 85.4919
+11/11 ━━━━━━━━━━━━━━━━━━━━ 0s 17ms/step - loss: 80.0728 - mean_squared_error: 80.0728 - val_loss: 14.9132 - val_mean_squared_error: 14.9132
+> set.seed(123)
+> train_indices <- caret::createDataPartition(y_test, p = 0.2, list = FALSE)
+> test_indices <- setdiff(seq_along(y_test), train_indices)
+> y_test_subset <- y_test[test_indices]
+> teacher_predictions_test <- teacher_predictions[test_indices]
+> student_predictions_test <- student_predictions[test_indices]
+> library("MLmetrics")
+
+載入套件：‘MLmetrics’
+
+下列物件被遮斷自 ‘package:caret’:
+
+    MAE, RMSE
+
+下列物件被遮斷自 ‘package:base’:
+
+    Recall
+
+> if (length(y_test_subset) == length(teacher_predictions_test) && length(y_test_subset) == length(student_predictions_test)) {
++     
++     # Define a threshold and create binary classes based on the test set
++     threshold <- median(y_test_subset)
++     teacher_class <- ifelse(teacher_predictions_test > threshold, 1, 0)
++     student_class <- ifelse(student_predictions_test > threshold, 1, 0)
++     y_test_class <- ifelse(y_test_subset > threshold, 1, 0)
++     
++     # Calculate F1 scores if lengths match
++     library(caret)
++     f1_teacher <- F1_Score(y_test_class, teacher_class, positive = "1")
++     f1_student <- F1_Score(y_test_class, student_class, positive = "1")
++     
++     # Output F1 scores
++     print(paste("F1 Score Teacher:", f1_teacher))
++     print(paste("F1 Score Student:", f1_student))
++     
++ } else {
++     stop("Error: Lengths of y_test_subset, teacher_predictions_test, and student_predictions_test do not match.")
++ }
+[1] "F1 Score Teacher: 0.525"
+[1] "F1 Score Student: 0.585365853658537"
+> library(pROC)
+Type 'citation("pROC")' for a citation.
+
+載入套件：‘pROC’
+
+下列物件被遮斷自 ‘package:stats’:
+
+    cov, smooth, var
+
+> par(pty ='s')
+> roc1 <- roc(y_test_class, teacher_class) 
+Setting levels: control = 0, case = 1
+Setting direction: controls < cases
+> roc2 <- roc(y_test_class, student_class)
+Setting levels: control = 0, case = 1
+Setting direction: controls < cases
+> print(roc1)
+
+Call:
+roc.default(response = y_test_class, predictor = teacher_class)
+
+Data: teacher_class in 40 controls (y_test_class 0) < 39 cases (y_test_class 1).
+Area under the curve: 0.5192
+> 
+> print(roc2)
+
+Call:
+roc.default(response = y_test_class, predictor = student_class)
+
+Data: student_class in 40 controls (y_test_class 0) < 39 cases (y_test_class 1).
+Area under the curve: 0.5702
+> plot (roc1, grid =TRUE, legacy.axes = TRUE, lwd = 3, smooth =TRUE, print.auc =FALSE, main = "ROC curve comparison", identity.lty=2, identity.lwd=2)
+> plot (roc2, grid =TRUE, legacy.axes = TRUE, lwd = 3, smooth =TRUE, print.auc =FALSE, identity.lty=2, identity.lwd=2, add=TRUE, col= "red")
+There were 18 warnings (use warnings() to see them)

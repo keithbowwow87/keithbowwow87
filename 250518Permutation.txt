@@ -1,0 +1,179 @@
+R version 4.2.3 (2023-03-15 ucrt) -- "Shortstop Beagle"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> # Required packages
+> library(MASS)
+> library(spdep)
+載入需要的套件：sp
+載入需要的套件：spData
+載入需要的套件：sf
+Linking to GEOS 3.9.1, GDAL 3.4.3, PROJ 7.2.1; sf_use_s2() is TRUE
+> library(spData)
+> library(spatialreg)
+載入需要的套件：Matrix
+
+載入套件：‘spatialreg’
+
+下列物件被遮斷自 ‘package:spdep’:
+
+    get.ClusterOption, get.coresOption, get.mcOption, get.VerboseOption,
+    get.ZeroPolicyOption, set.ClusterOption, set.coresOption, set.mcOption,
+    set.VerboseOption, set.ZeroPolicyOption
+
+> library(caret)
+載入需要的套件：ggplot2
+載入需要的套件：lattice
+> library(dplyr)
+
+載入套件：‘dplyr’
+
+下列物件被遮斷自 ‘package:MASS’:
+
+    select
+
+下列物件被遮斷自 ‘package:stats’:
+
+    filter, lag
+
+下列物件被遮斷自 ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+> 
+> # Load data
+> data("Boston")
+> X <- Boston[, -14]  # predictors
+> y <- Boston$medv    # response
+> 
+> # Spatial weights
+> boston_tracts <- st_read(system.file("shapes/boston_tracts.shp", package = "spData")[1], quiet = TRUE)
+> nb_q <- spdep::poly2nb(boston_tracts)
+> lw_q <- spdep::nb2listw(nb_q, style = "W")
+> 
+> # Train/test split
+> set.seed(42)
+> train_indices <- createDataPartition(y, p = 0.8, list = FALSE)
+> Boston_train <- Boston[train_indices, ]
+> Boston_test <- Boston[-train_indices, ]
+> y_test <- Boston_test$medv
+> 
+> # Fit teacher model on training set
+> lw_train <- spdep::nb2listw(nb_q[train_indices], style = "W")
+Error in spdep::nb2listw(nb_q[train_indices], style = "W") : 
+  Not a neighbours list
+> boston_train_tracts <- boston_tracts[train_indices, ]
+> nb_train <- spdep::poly2nb(boston_train_tracts)
+> lw_train <- spdep::nb2listw(nb_train, style = "W")
+Error in spdep::nb2listw(nb_train, style = "W") : 
+  Empty neighbour sets found
+> # Identify polygons with at least one neighbor
+> non_isolated <- which(card(nb_train) > 0)
+> 
+> # Filter spatial objects and data
+> boston_train_tracts <- boston_train_tracts[non_isolated, ]
+> Boston_train <- Boston_train[non_isolated, ]
+> 
+> # Recompute neighbors
+> nb_train <- spdep::poly2nb(boston_train_tracts)
+> lw_train <- spdep::nb2listw(nb_train, style = "W")
+> 
+> teacher_model <- lagsarlm(medv ~ ., data = Boston_train, listw = lw_train)
+> 
+> # Predict on test set
+> X_test <- Boston_test[, -14]
+> X_test_mat <- model.matrix(medv ~ ., data = Boston_test)
+> teacher_coefs <- coef(teacher_model)
+> y_pred_baseline <- as.vector(X_test_mat %*% teacher_coefs)
+Error in X_test_mat %*% teacher_coefs : non-conformable arguments
+> # Align coefficients for prediction
+> linear_coefs <- teacher_model$coefficients[ names(teacher_model$coefficients) %in% colnames(X_test_mat) ]
+> coef_aligned <- linear_coefs[match(colnames(X_test_mat), names(linear_coefs))]
+> coef_aligned[is.na(coef_aligned)] <- 0  # fill in missing with 0
+> 
+> # Predict baseline
+> y_pred_baseline <- as.vector(X_test_mat %*% coef_aligned)
+> 
+> # Compute baseline MSE
+> baseline_mse <- mean((y_test - y_pred_baseline)^2)
+> 
+> # Permutation Importance Loop
+> features <- names(X_test)
+> delta_mse_list <- c()
+> 
+> for (feat in features) {
++     X_permuted <- X_test
++     X_permuted[[feat]] <- sample(X_permuted[[feat]])  # permute feature
++     
++     X_permuted_mat <- model.matrix(~ ., data = X_permuted)
++     y_pred_perm <- as.vector(X_permuted_mat %*% teacher_coefs)
++     mse_perm <- mean((y_test - y_pred_perm)^2)
++     delta_mse <- mse_perm - baseline_mse
++     
++     delta_mse_list <- c(delta_mse_list, delta_mse)
++ }
+Error in X_permuted_mat %*% teacher_coefs : non-conformable arguments
+> for (feat in features) {
++     X_permuted <- X_test
++     X_permuted[[feat]] <- sample(X_permuted[[feat]])  # permute feature
++     
++     X_permuted_mat <- model.matrix(~ ., data = X_permuted)
++     
++     # Align coefficients again to current permuted matrix
++     coef_aligned <- teacher_model$coefficients[ names(teacher_model$coefficients) %in% colnames(X_permuted_mat) ]
++     coef_aligned <- coef_aligned[match(colnames(X_permuted_mat), names(coef_aligned))]
++     coef_aligned[is.na(coef_aligned)] <- 0  # fill any missing with zero
++     
++     y_pred_perm <- as.vector(X_permuted_mat %*% coef_aligned)
++     mse_perm <- mean((y_test - y_pred_perm)^2)
++     delta_mse <- mse_perm - baseline_mse
++     
++     delta_mse_list <- c(delta_mse_list, delta_mse)
++ }
+> 
+> # Output importance table
+> importance_df <- data.frame(
++     Feature = features,
++     Delta_MSE = delta_mse_list
++ ) %>%
++     arrange(desc(Delta_MSE))
+> 
+> print("Permutation-based Feature Importance (SDEM Teacher Model):")
+[1] "Permutation-based Feature Importance (SDEM Teacher Model):"
+> print(importance_df)
+   Feature    Delta_MSE
+1    lstat 2.539724e+01
+2       rm 2.389613e+01
+3      tax 1.179424e+01
+4      dis 8.511004e+00
+5      rad 6.764567e+00
+6  ptratio 5.533770e+00
+7    black 4.209312e+00
+8       zn 4.112219e+00
+9      nox 2.908782e+00
+10    crim 2.360842e+00
+11    chas 2.851063e-01
+12   indus 7.753317e-02
+13     age 6.297410e-05
+> 
+> # Optional: Plot
+> library(ggplot2)
+> ggplot(importance_df, aes(x = reorder(Feature, Delta_MSE), y = Delta_MSE)) +
++     geom_bar(stat = "identity", fill = "darkblue") +
++     coord_flip() +
++     labs(title = "Feature Importance via Permutation (SDEM)",
++          x = "Feature",
++          y = "Increase in MSE when Permuted")
+> 

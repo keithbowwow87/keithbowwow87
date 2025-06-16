@@ -1,0 +1,184 @@
+
+ library(MASS)
+> library(spdep)
+載入需要的套件：sp
+載入需要的套件：spData
+載入需要的套件：sf
+Linking to GEOS 3.9.1, GDAL 3.4.3, PROJ 7.2.1; sf_use_s2() is TRUE
+> library(sf)
+> library(spData)
+> library(caret)
+載入需要的套件：ggplot2
+載入需要的套件：lattice
+> library(dplyr)
+
+載入套件：‘dplyr’
+
+下列物件被遮斷自 ‘package:MASS’:
+
+    select
+
+下列物件被遮斷自 ‘package:stats’:
+
+    filter, lag
+
+下列物件被遮斷自 ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+> library(keras)
+> library(tensorflow)
+
+載入套件：‘tensorflow’
+
+下列物件被遮斷自 ‘package:caret’:
+
+    train
+
+> library(ggplot2)
+> # Load data
+> data("Boston")
+> X <- Boston[, -14]
+> y <- Boston$medv
+> features <- colnames(X)
+> 
+> # Split data
+> set.seed(42)
+> train_indices <- createDataPartition(y, p = 0.8, list = FALSE)
+> X_train <- X[train_indices, ]
+> y_train <- y[train_indices]
+> X_test <- X[-train_indices, ]
+> y_test <- y[-train_indices]
+> 
+> # Normalize and convert to matrices
+> X_train_scaled <- scale(X_train)
+> X_test_scaled <- scale(X_test, center = attr(X_train_scaled, "scaled:center"),
++                        scale = attr(X_train_scaled, "scaled:scale"))
+> X_train_scaled <- as.matrix(X_train_scaled)
+> X_test_scaled <- as.matrix(X_test_scaled)
+> library(keras3)
+
+ # Define student model builder
+> build_student_model <- function(input_shape) {
++     model <- keras_model_sequential() %>%
++         layer_dense(units = 128, activation = 'relu', c(input_shape)) %>%
++         layer_dropout(rate = 0.2) %>%
++         layer_dense(units = 32, activation = "relu") %>% 
++         layer_dropout(rate = 0.2) %>%
++         layer_dense(units = 1,  activation = "linear")
++     model %>% compile(
++         loss = "mse",
++         optimizer = optimizer_adam(learning_rate = 0.001)
++         
++     )
++     return(model)
++ }
+> # Train baseline model
+> baseline_model <- build_student_model(ncol(X_train_scaled))
+> baseline_model %>% fit(x = X_train_scaled, y = y_train, epochs = 100, batch_size = 32, verbose = 0)
+> baseline_preds <- baseline_model %>% predict(x = X_test_scaled)
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 128ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step
+> baseline_mse <- mean((y_test - baseline_preds)^2)
+> # Feature ablation
+> results <- data.frame(Feature_Removed = "None (baseline)", Student_MSE = baseline_mse, Delta_MSE = NA)
+> for (f in features) {
++     X_train_reduced <- as.matrix(X_train_scaled[, !(colnames(X_train_scaled) == f), drop = FALSE])
++     X_test_reduced <- as.matrix(X_test_scaled[, !(colnames(X_test_scaled) == f), drop = FALSE])
++     
++     model <- build_student_model(ncol(X_train_reduced))
++     model %>% fit(x = X_train_reduced, y = y_train, epochs = 100, batch_size = 32, verbose = 0)
++     preds <- model %>% predict(x = X_test_reduced)
++     mse <- mean((y_test - preds)^2)
++     delta <- mse - baseline_mse
++     results <- rbind(results, data.frame(Feature_Removed = f, Student_MSE = mse, Delta_MSE = round(delta, 4)))
++ }
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 122ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step
+WARNING:tensorflow:5 out of the last 9 calls to <function TensorFlowTrainer.make_predict_function.<locals>.one_step_on_data_distributed at 0x00000236FA7F4720> triggered tf.function retracing. Tracing is expensive and the excessive number of tracings could be due to (1) creating @tf.function repeatedly in a loop, (2) passing tensors with different shapes, (3) passing Python objects instead of tensors. For (1), please define your @tf.function outside of the loop. For (2), @tf.function has reduce_retracing=True option that can avoid unnecessary retracing. For (3), please refer to https://www.tensorflow.org/guide/function#controlling_retracing and https://www.tensorflow.org/api_docs/python/tf/function for  more details.
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 124ms/stepWARNING:tensorflow:6 out of the last 12 calls to <function TensorFlowTrainer.make_predict_function.<locals>.one_step_on_data_distributed at 0x00000236FA7F4720> triggered tf.function retracing. Tracing is expensive and the excessive number of tracings could be due to (1) creating @tf.function repeatedly in a loop, (2) passing tensors with different shapes, (3) passing Python objects instead of tensors. For (1), please define your @tf.function outside of the loop. For (2), @tf.function has reduce_retracing=True option that can avoid unnecessary retracing. For (3), please refer to https://www.tensorflow.org/guide/function#controlling_retracing and https://www.tensorflow.org/api_docs/python/tf/function for  more details.
+
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 39ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 39ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 114ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 26ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 119ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 119ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 26ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 26ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 117ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 115ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 117ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 126ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 28ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 113ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 114ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 26ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 26ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 115ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 27ms/step
+
+1/4 ━━━━━━━━━━━━━━━━━━━━ 0s 115ms/step
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step 
+4/4 ━━━━━━━━━━━━━━━━━━━━ 0s 29ms/step
+> 
+> print(results)
+   Feature_Removed Student_MSE Delta_MSE
+1  None (baseline)    11.23540        NA
+2             crim    12.17367    0.9383
+3               zn    10.75126   -0.4841
+4            indus    13.56180    2.3264
+5             chas    11.85874    0.6233
+6              nox    13.53059    2.2952
+7               rm    21.95804   10.7226
+8              age    12.65456    1.4192
+9              dis    14.86757    3.6322
+10             rad    10.86940   -0.3660
+11             tax    11.24807    0.0127
+12         ptratio    13.27932    2.0439
+13           black    12.62764    1.3922
+14           lstat    16.15132    4.9159
+> 
+> # Plot
+> ggplot(results[-1, ], aes(x = reorder(Feature_Removed, Delta_MSE), y = Delta_MSE)) +
++     geom_bar(stat = "identity", fill = "steelblue") +
++     coord_flip() +
++     labs(title = "Effect of Feature Removal on Student MSE",
++          x = "Feature Removed", y = "Δ MSE (Student - Baseline)")
+
+
+
+
+
+
+
+
+
